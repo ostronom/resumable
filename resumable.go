@@ -3,6 +3,8 @@ package resumable
 import (
 	"errors"
 	"fmt"
+	"log"
+//	"log"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -11,7 +13,8 @@ import (
 type Chunk struct {
 	Filename string
 	UploadId string
-	Offset   uint64
+	Offset   int64
+  Cookies  []*http.Cookie
 	Final    bool
 	Body     []byte
 }
@@ -25,7 +28,7 @@ type Resumable struct {
 	MaxBodyLength     int
 	OptimalChunkSize  int
 	MaxChunkSize      int
-	ChunksChan        chan *Chunk
+	ChunksChan        (chan *Chunk)
 }
 
 func (r *Resumable) SetDefaults() {
@@ -34,34 +37,23 @@ func (r *Resumable) SetDefaults() {
 	r.FileParamName = "file"
 	r.FileNameParamName = "filename"
 	r.UploadIdParamName = "id"
-	r.OptimalChunkSize = 16 * 1024
 	r.MaxChunkSize = 512 * 1024
 	r.ChunksChan = make(chan *Chunk)
 }
 
 func (r *Resumable) ReadBody(p *multipart.Part) ([]byte, error) {
-	chunk := make([]byte, r.OptimalChunkSize, r.MaxChunkSize)
-	read := 0
-	// TODO: find a better way to identify oversized chunks
-	for {
-		n, err := p.Read(chunk)
-		read += n
-		if read > r.MaxChunkSize {
-			return nil, errors.New("Max chunk size exceeded")
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
+	chunk := make([]byte, r.MaxChunkSize)
+	n, err := p.Read(chunk)
+	// TODO: find a way to identify oversized chunks
+  if err != nil && err != io.EOF {
+		return nil, err
 	}
-	return chunk[:read], nil
+	return chunk[:n], nil
 }
 
 func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
-	var total uint64 = 0
-	chunk := Chunk{}
+	var total int64 = 0
+	chunk := Chunk{Body: make([]byte, r.MaxChunkSize)}
 	for {
 		part, err := reader.NextPart()
 		if err == io.EOF {
@@ -77,14 +69,14 @@ func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
-			chunk.Offset = v.(uint64)
+			chunk.Offset = v.(int64)
 			break
 		case r.TotalParamName:
 			v, err := consumePart(part, 8, consumeInt)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
-			total = v.(uint64)
+			total = v.(int64)
 			break
 		case r.UploadIdParamName:
 			v, err := consumePart(part, 1024, consumeString)
@@ -105,14 +97,18 @@ func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
-			chunk.Body = body
+			chunk.Body = append(chunk.Body, body...)
 			break
 		}
 	}
 	if len(chunk.UploadId) == 0 {
 		return nil, errors.New("empty" + " (" + r.UploadIdParamName + ")")
 	}
-	chunk.Final = chunk.Offset+uint64(len(chunk.Body)) >= total
+	if len(chunk.Filename) == 0 {
+		return nil, errors.New("empty" + " (" + r.FileNameParamName + ")")
+	}
+	log.Println("Chunk body", string(chunk.Body))
+	chunk.Final = chunk.Offset+int64(len(chunk.Body)) >= total
 	return &chunk, nil
 }
 
@@ -131,6 +127,7 @@ func (r *Resumable) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+  chunk.Cookies = req.Cookies()
 	go func() { r.ChunksChan <- chunk }()
 	fmt.Fprintf(w, "OK")
 }

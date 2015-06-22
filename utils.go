@@ -7,7 +7,7 @@ import (
 )
 
 func consumeInt(value []byte, n int) (interface{}, error) {
-	return strconv.ParseUint(string(value[:n]), 10, 64)
+	return strconv.ParseInt(string(value[:n]), 10, 64)
 }
 
 func consumeString(value []byte, n int) (interface{}, error) {
