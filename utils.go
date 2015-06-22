@@ -1,9 +1,9 @@
 package resumable
 
 import (
+	"mime/multipart"
 	"strconv"
 	"strings"
-	"mime/multipart"
 )
 
 func consumeInt(value []byte, n int) (interface{}, error) {
