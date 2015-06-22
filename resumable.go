@@ -1,36 +1,12 @@
-package main
+package resumable
 
 import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
-	"strconv"
-	"strings"
 )
-
-func consumePart(p *multipart.Part, sz int, f func([]byte, int) (interface{}, error)) (interface{}, error) {
-	value := make([]byte, sz, sz)
-	n, err := p.Read(value)
-	if err != nil {
-		return nil, err
-	}
-	i, err := f(value, n)
-	if err != nil {
-		return nil, err
-	}
-	return i, err
-}
-
-func consumeInt(value []byte, n int) (interface{}, error) {
-	return strconv.ParseUint(string(value[:n]), 10, 64)
-}
-
-func consumeString(value []byte, n int) (interface{}, error) {
-	return string(value[:n]), nil
-}
 
 type Chunk struct {
 	Filename string
@@ -44,6 +20,7 @@ type Resumable struct {
 	OffsetParamName   string
 	TotalParamName    string
 	FileParamName     string
+	FileNameParamName string
 	UploadIdParamName string
 	MaxBodyLength     int
 	OptimalChunkSize  int
@@ -55,21 +32,11 @@ func (r *Resumable) SetDefaults() {
 	r.OffsetParamName = "offset"
 	r.TotalParamName = "total"
 	r.FileParamName = "file"
+	r.FileNameParamName = "filename"
 	r.UploadIdParamName = "id"
 	r.OptimalChunkSize = 16 * 1024
-	r.MaxChunkSize = 256 * 1024
-}
-
-func (r *Resumable) StartConusmer() {
-	if r.ChunksChan == nil {
-		r.ChunksChan = make(chan *Chunk)
-	}
-	go func() {
-		for {
-			<-r.ChunksChan
-			log.Println("Got smth from chan")
-		}
-	}()
+	r.MaxChunkSize = 512 * 1024
+	r.ChunksChan = make(chan *Chunk)
 }
 
 func (r *Resumable) ReadBody(p *multipart.Part) ([]byte, error) {
@@ -120,14 +87,20 @@ func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
 			total = v.(uint64)
 			break
 		case r.UploadIdParamName:
-			v, err := consumePart(part, 255, consumeString)
+			v, err := consumePart(part, 1024, consumeString)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
-			chunk.UploadId = strings.TrimSpace(v.(string))
+			chunk.UploadId = v.(string)
+			break
+		case r.FileNameParamName:
+			v, err := consumePart(part, 1024, consumeString)
+			if err != nil {
+				return nil, errors.New(err.Error() + " (" + name + ")")
+			}
+			chunk.Filename = v.(string)
 			break
 		case r.FileParamName:
-			chunk.Filename = part.FileName()
 			body, err := r.ReadBody(part)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
@@ -160,15 +133,4 @@ func (r *Resumable) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	go func() { r.ChunksChan <- chunk }()
 	fmt.Fprintf(w, "OK")
-}
-
-func main() {
-	resumable := &Resumable{}
-	resumable.SetDefaults()
-	resumable.StartConusmer()
-	http.Handle("/", resumable)
-	err := http.ListenAndServe(":80", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
 }
