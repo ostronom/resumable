@@ -12,10 +12,9 @@ type Chunk struct {
 	Filename string
 	UploadId string
 	Offset   int64
-  Cookies  []*http.Cookie
 	Final    bool
 	Body     []byte
-  Extra    map[string]string
+	Extra    interface{}
 }
 
 type Resumable struct {
@@ -23,19 +22,9 @@ type Resumable struct {
 	TotalParamName    string
 	FileParamName     string
 	UploadIdParamName string
-	MaxBodyLength     int
-	OptimalChunkSize  int
 	MaxChunkSize      int
 	ChunksChan        (chan *Chunk)
-}
-
-func (r *Resumable) SetDefaults() {
-	r.OffsetParamName = "offset"
-	r.TotalParamName = "total"
-	r.FileParamName = "file"
-	r.UploadIdParamName = "id"
-	r.MaxChunkSize = 512 * 1024
-	r.ChunksChan = make(chan *Chunk)
+	Preprocessor      func(*Chunk, *http.Request) error
 }
 
 func (r *Resumable) ReadBody(p *multipart.Part, c *Chunk) error {
@@ -71,21 +60,21 @@ func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
 		name := part.FormName()
 		switch name {
 		case r.OffsetParamName:
-			v, err := consumePart(part, 8, consumeInt)
+			v, err := ConsumePart(part, 8, ConsumeInt)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
 			chunk.Offset = v.(int64)
 			break
 		case r.TotalParamName:
-			v, err := consumePart(part, 8, consumeInt)
+			v, err := ConsumePart(part, 8, ConsumeInt)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
 			total = v.(int64)
 			break
 		case r.UploadIdParamName:
-			v, err := consumePart(part, 1024, consumeString)
+			v, err := ConsumePart(part, 1024, ConsumeString)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
@@ -99,7 +88,7 @@ func (r *Resumable) MakeChunk(reader *multipart.Reader) (*Chunk, error) {
 			}
 			break
 		default:
-			v, err := consumePart(part, 1024, consumeString)
+			v, err := ConsumePart(part, 1024, ConsumeString)
 			if err != nil {
 				return nil, errors.New(err.Error() + " (" + name + ")")
 			}
@@ -132,7 +121,13 @@ func (r *Resumable) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-  chunk.Cookies = req.Cookies()
+	chunk.Cookies = req.Cookies()
 	go func() { r.ChunksChan <- chunk }()
 	fmt.Fprintf(w, "OK")
+}
+
+func MakeResumable(pre func(*Chunk, *http.Request) error) *Resumable {
+	r := &Resumable{OffsetParamName: "offset", TotalParamName: "total", FileParamName: "file", UploadIdParamName: "id", MaxChunkSize: 512 * 1024, ChunksChan: make(chan *Chunk)}
+	r.Preprocessor = pre
+	return r
 }
